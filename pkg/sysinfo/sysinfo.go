@@ -1,12 +1,15 @@
 package sysinfo
 
 import (
+	"bufio"
 	"fmt"
 	"math"
 	"os"
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -170,6 +173,13 @@ func Collect(req *SystemInfoRequest) (*SystemInfo, []error) {
 			} else {
 				info.CPU.Load1Percent = uint8(math.Min((loadAvg.Load1/float64(coreCount))*100, 100))
 				info.CPU.Load15Percent = uint8(math.Min((loadAvg.Load15/float64(coreCount))*100, 100))
+
+				// Prefer the real utilisation from /proc/stat when it is available.
+				// Load average also counts uninterruptible IO waits, so on machines with
+				// heavy disk activity it can stay high even while the CPU is mostly idle.
+				if usage, ok := cpuUsagePercent(); ok {
+					info.CPU.Load1Percent = usage
+				}
 			}
 		} else {
 			addErr(fmt.Errorf("getting load avg: %v", err))
@@ -295,4 +305,89 @@ func inferCPUTempSensor(sensors []sensors.TemperatureStat) *sensors.TemperatureS
 	}
 
 	return nil
+}
+
+// cached counters from the previous /proc/stat read, used to derive real CPU usage
+var (
+	cpuStatMu    sync.Mutex
+	cpuLastIdle  uint64
+	cpuLastTotal uint64
+	cpuLastValid bool
+)
+
+// readProcStatCPU reads the aggregate idle and total counters from /proc/stat
+func readProcStatCPU() (idle uint64, total uint64, err error) {
+	file, err := os.Open("/proc/stat")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		return 0, 0, fmt.Errorf("empty /proc/stat")
+	}
+
+	fields := strings.Fields(scanner.Text())
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0, fmt.Errorf("unexpected /proc/stat format")
+	}
+
+	values := make([]uint64, 0, 8)
+	for i := 1; i < len(fields) && i <= 8; i++ {
+		value, parseErr := strconv.ParseUint(fields[i], 10, 64)
+		if parseErr != nil {
+			return 0, 0, parseErr
+		}
+		values = append(values, value)
+	}
+
+	if len(values) < 4 {
+		return 0, 0, fmt.Errorf("not enough cpu fields in /proc/stat")
+	}
+
+	// user nice system idle iowait irq softirq steal
+	idle = values[3]
+	if len(values) > 4 {
+		idle += values[4]
+	}
+	for _, value := range values {
+		total += value
+	}
+
+	return idle, total, nil
+}
+
+// cpuUsagePercent returns real CPU utilisation (0-100) since the previous call.
+// It returns false on the first call, when there is no baseline to diff against.
+func cpuUsagePercent() (uint8, bool) {
+	idle, total, err := readProcStatCPU()
+	if err != nil {
+		return 0, false
+	}
+
+	cpuStatMu.Lock()
+	defer cpuStatMu.Unlock()
+
+	prevIdle, prevTotal, hasPrev := cpuLastIdle, cpuLastTotal, cpuLastValid
+	cpuLastIdle, cpuLastTotal, cpuLastValid = idle, total, true
+
+	if !hasPrev || total <= prevTotal {
+		return 0, false
+	}
+
+	deltaTotal := total - prevTotal
+	deltaIdle := idle - prevIdle
+	if deltaTotal == 0 {
+		return 0, false
+	}
+
+	percent := (1.0 - float64(deltaIdle)/float64(deltaTotal)) * 100.0
+	if percent < 0 {
+		percent = 0
+	} else if percent > 100 {
+		percent = 100
+	}
+
+	return uint8(math.Round(percent)), true
 }
