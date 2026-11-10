@@ -1,0 +1,19 @@
+{{ template "widget-base.html" . }}
+
+{{ define "widget-content" }}
+<div class="metrics-grid" style="grid-template-columns: repeat({{ .Columns }}, minmax(0, 1fr));">
+    {{ range .Metrics }}
+    <div class="metric-card {{ .Class }}">
+        <div class="metric-label">
+            {{ if .Icon }}<img class="metric-icon" src="{{ .Icon }}" alt="">{{ end }}
+            <span>{{ .Label }}</span>
+        </div>
+        <div class="metric-value">{{ .Value }}{{ if .Unit }}<span class="metric-unit">{{ .Unit }}</span>{{ end }}</div>
+        {{ if .Text }}<div class="metric-sub">{{ .Text }}</div>{{ end }}
+        {{ if ge .Percent 0 }}
+        <div class="metric-progress"><div class="metric-progress-fill" style="width: {{ .Percent }}%;"></div></div>
+        {{ end }}
+    </div>
+    {{ end }}
+</div>
+{{ end }}
