@@ -1,0 +1,27 @@
+{{ template "widget-base.html" . }}
+
+{{ define "widget-content" }}
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                {{ range .Headers }}
+                <th>{{ . }}</th>
+                {{ end }}
+            </tr>
+        </thead>
+        <tbody>
+            {{ range .Rows }}
+            <tr>
+                {{ range .Cells }}
+                <td{{ if .Class }} class="{{ .Class }}"{{ end }}>{{ .Text }}</td>
+                {{ end }}
+            </tr>
+            {{ end }}
+        </tbody>
+    </table>
+</div>
+{{ if .Truncated }}
+<div class="size-h6 color-base margin-top-10">仅显示前 {{ .Limit }} 条</div>
+{{ end }}
+{{ end }}
